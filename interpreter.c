@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "console.h"
+#include "statements.h"
+
 static void st_interpreter_error(
     STInterpreter* interpreter,
     const char* message
@@ -347,6 +350,219 @@ static int st_interpreter_evaluate(
     }
 }
 
+static int st_interpreter_execute_function_call(
+    STInterpreter* interpreter,
+    STASTNode* node
+)
+{
+    STStatement* statement;
+    STValue value;
+
+    if (interpreter == NULL || node == NULL)
+        return 0;
+
+    statement = node->statement;
+
+    if (statement == NULL ||
+        statement->name == NULL)
+    {
+        st_interpreter_error(
+            interpreter,
+            "Invalid function call."
+        );
+
+        return 0;
+    }
+
+    /*
+     * print(value)
+     */
+    if (strcmp(statement->name, "print") == 0)
+    {
+        if (statement->argument_count != 1)
+        {
+            st_interpreter_error(
+                interpreter,
+                "print() expects one argument."
+            );
+
+            return 0;
+        }
+
+        if (!st_interpreter_evaluate(
+                interpreter,
+                statement->arguments[0],
+                &value))
+        {
+            return 0;
+        }
+
+        switch (value.type)
+        {
+            case ST_TYPE_INT:
+                st_console_print_int(
+                    value.data.int_value
+                );
+                break;
+
+            case ST_TYPE_FLOAT:
+                st_console_print_float(
+                    value.data.float_value
+                );
+                break;
+
+            case ST_TYPE_STRING:
+                st_console_print(
+                    value.data.string_value
+                );
+                break;
+
+            case ST_TYPE_BOOL:
+                st_console_print_bool(
+                    value.data.bool_value
+                );
+                break;
+
+            case ST_TYPE_CHAR:
+                st_console_print_char(
+                    value.data.char_value
+                );
+                break;
+
+            default:
+                st_value_free(&value);
+
+                st_interpreter_error(
+                    interpreter,
+                    "Unsupported value for print()."
+                );
+
+                return 0;
+        }
+
+        st_value_free(&value);
+        return 1;
+    }
+
+    /*
+     * println(value)
+     */
+    if (strcmp(statement->name, "println") == 0)
+    {
+        if (statement->argument_count != 1)
+        {
+            st_interpreter_error(
+                interpreter,
+                "println() expects one argument."
+            );
+
+            return 0;
+        }
+
+        if (!st_interpreter_evaluate(
+                interpreter,
+                statement->arguments[0],
+                &value))
+        {
+            return 0;
+        }
+
+        switch (value.type)
+        {
+            case ST_TYPE_INT:
+                st_console_print_int(
+                    value.data.int_value
+                );
+                st_console_print_line("");
+                break;
+
+            case ST_TYPE_FLOAT:
+                st_console_print_float(
+                    value.data.float_value
+                );
+                st_console_print_line("");
+                break;
+
+            case ST_TYPE_STRING:
+                st_console_print_line(
+                    value.data.string_value
+                );
+                break;
+
+            case ST_TYPE_BOOL:
+                st_console_print_bool(
+                    value.data.bool_value
+                );
+                st_console_print_line("");
+                break;
+
+            case ST_TYPE_CHAR:
+                st_console_print_char(
+                    value.data.char_value
+                );
+                st_console_print_line("");
+                break;
+
+            default:
+                st_value_free(&value);
+
+                st_interpreter_error(
+                    interpreter,
+                    "Unsupported value for println()."
+                );
+
+                return 0;
+        }
+
+        st_value_free(&value);
+        return 1;
+    }
+
+    /*
+     * readInt()
+     */
+    if (strcmp(statement->name, "readInt") == 0)
+    {
+        int input;
+
+        if (statement->argument_count != 0)
+        {
+            st_interpreter_error(
+                interpreter,
+                "readInt() expects no arguments."
+            );
+
+            return 0;
+        }
+
+        if (!st_console_read_int(&input))
+        {
+            st_interpreter_error(
+                interpreter,
+                "Failed to read integer."
+            );
+
+            return 0;
+        }
+
+        st_value_free(
+            &interpreter->result
+        );
+
+        interpreter->result =
+            st_value_int(input);
+
+        return 1;
+    }
+
+    st_interpreter_error(
+        interpreter,
+        "Unknown function."
+    );
+
+    return 0;
+}
+
 int st_interpreter_init(
     STInterpreter* interpreter
 )
@@ -433,11 +649,33 @@ int st_interpreter_execute(
     interpreter->error_count = 0;
     interpreter->last_error[0] = '\0';
 
-    node = root;
+    node = root->child_count > 0
+        ? root->children[0]
+        : NULL;
 
     while (node != NULL)
     {
-        if (node->expression != NULL)
+        /*
+         * Function calls:
+         *
+         * print(...)
+         * println(...)
+         * readInt()
+         */
+        if (node->type == ST_AST_FUNCTION_CALL)
+        {
+            if (!st_interpreter_execute_function_call(
+                    interpreter,
+                    node))
+            {
+                return 0;
+            }
+        }
+
+        /*
+         * Normal expressions.
+         */
+        else if (node->expression != NULL)
         {
             if (!st_interpreter_evaluate(
                     interpreter,
@@ -454,7 +692,36 @@ int st_interpreter_execute(
             interpreter->result = value;
         }
 
-        node = node->children[0];
+        /*
+         * Move to the next top-level AST node.
+         */
+        if (node->parent != NULL)
+        {
+            int index;
+
+            for (index = 0;
+                 index < node->parent->child_count;
+                 index++)
+            {
+                if (node->parent->children[index] == node)
+                    break;
+            }
+
+            if (index + 1 <
+                node->parent->child_count)
+            {
+                node =
+                    node->parent->children[index + 1];
+            }
+            else
+            {
+                node = NULL;
+            }
+        }
+        else
+        {
+            node = NULL;
+        }
     }
 
     return interpreter->error_count == 0;
